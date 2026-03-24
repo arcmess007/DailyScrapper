@@ -84,9 +84,9 @@ async def main():
             try:
                 await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
                 break
-        except Exception as e:
-            print(f"Retry {attempt+1} failed: {e}")
-            await asyncio.sleep(5)
+            except Exception as e:
+                print(f"Retry {attempt+1} failed: {e}")
+                await asyncio.sleep(5)
         else:
             print("❌ Failed to load page after retries")
             return
