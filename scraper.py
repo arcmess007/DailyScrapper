@@ -155,7 +155,7 @@ async def main():
             return
 
         # Remove duplicates
-        unique = {t["contractId"]: t for t in all_trades}
+        unique = {t.get("contractId"): t for t in all_trades if t.get("contractId")}
         rows = list(unique.values())
 
         # -----------------------------
