@@ -2,8 +2,8 @@ name: NEPSE Floorsheet Scraper
 
 on:
   schedule:
-    - cron: "45 9 * * 1-5"  # 3:30 PM Nepal time (UTC 9:45)
-  workflow_dispatch:  # manual run button
+    - cron: "45 9 * * 1-5"
+  workflow_dispatch:
 
 jobs:
   run-scraper:
