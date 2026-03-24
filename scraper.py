@@ -10,6 +10,11 @@ API_URL = "https://nepalstock.com/api/nots/nepse-data/floorsheet"
 
 OUTPUT_DIR = "data"   # folder to store files
 
+# Maximum retries for page load
+MAX_RETRIES = 3
+PAGE_LOAD_TIMEOUT = 60000
+INITIAL_WAIT_DELAY = 5  # seconds to wait after page load for XHR requests
+
 
 def extract_trades(data):
     if isinstance(data, list):
@@ -73,28 +78,42 @@ async def main():
                         payload = json.loads(post_data)
                         session["auth"] = auth
                         session["id"] = payload.get("id")
-                        print("[✓] Token captured")
-                    except:
-                        pass
+                        print("[✓] Token captured successfully")
+                    except json.JSONDecodeError as e:
+                        print(f"[!] Failed to parse POST data: {e}")
+                    except Exception as e:
+                        print(f"[!] Error in sniff function: {e}")
 
         page.on("request", sniff)
 
         print(f"Opening {TARGET_URL}")
-        for attempt in range(3):
+        for attempt in range(MAX_RETRIES):
             try:
-                await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+                # Wait for network to be idle to ensure all XHR requests complete
+                await page.goto(TARGET_URL, wait_until="networkidle", timeout=PAGE_LOAD_TIMEOUT)
+                print("[✓] Page loaded successfully")
                 break
             except Exception as e:
-                print(f"Retry {attempt+1} failed: {e}")
-                await asyncio.sleep(5)
+                print(f"[!] Attempt {attempt+1} failed: {e}")
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(5)
         else:
             print("❌ Failed to load page after retries")
-            return
-
-        if not session["auth"]:
-            print("❌ Token capture failed")
             await browser.close()
             return
+
+        # Wait for XHR requests to be captured
+        print(f"Waiting {INITIAL_WAIT_DELAY} seconds for token to be captured...")
+        await asyncio.sleep(INITIAL_WAIT_DELAY)
+
+        if not session["auth"]:
+            print("❌ Token capture failed - Authorization header not found")
+            print("[!] Debugging: Check if the website structure has changed")
+            print("[!] Try manually visiting the website to verify API requests are being made")
+            await browser.close()
+            return
+
+        print(f"[✓] Using ID: {session['id']}")
 
         all_trades = []
         page_num = 0
@@ -123,7 +142,9 @@ async def main():
                 let body = null;
                 try {{
                     body = await res.json();
-                }} catch (e) {{}}
+                }} catch (e) {{
+                    console.error("Failed to parse response:", e);
+                }}
 
                 return {{ status: res.status, body }};
             }}
@@ -138,6 +159,10 @@ async def main():
                 await page.reload(wait_until="networkidle")
                 await asyncio.sleep(6)
                 continue
+
+            if result["status"] != 200:
+                print(f"[!] API returned status {result['status']}")
+                break
 
             data = result["body"]
             trades = extract_trades(data)
