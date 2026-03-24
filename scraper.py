@@ -53,7 +53,10 @@ async def main():
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)  # IMPORTANT
-        context = await browser.new_context(ignore_https_errors=True)
+        context = await browser.new_context(
+            ignore_https_errors=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+        )
         page = await context.new_page()
 
         session = {"auth": None, "id": None}
@@ -77,8 +80,16 @@ async def main():
         page.on("request", sniff)
 
         print(f"Opening {TARGET_URL}")
-        await page.goto(TARGET_URL, wait_until="networkidle")
-        await asyncio.sleep(8)
+        for attempt in range(3):
+            try:
+                await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+                break
+        except Exception as e:
+            print(f"Retry {attempt+1} failed: {e}")
+            await asyncio.sleep(5)
+        else:
+            print("❌ Failed to load page after retries")
+            return
 
         if not session["auth"]:
             print("❌ Token capture failed")
