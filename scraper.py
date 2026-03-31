@@ -4,6 +4,8 @@ import json
 import os
 from datetime import datetime
 from playwright.async_api import async_playwright
+import subprocess
+import sys
 
 TARGET_URL = "https://nepalstock.com/floor-sheet"
 API_URL = "https://nepalstock.com/api/nots/nepse-data/floorsheet"
@@ -12,21 +14,23 @@ OUTPUT_DIR = "data"
 MAX_RETRIES = 3
 PAGE_LOAD_TIMEOUT = 60000
 
-# ONLY THESE COLUMNS
-KEEP_COLUMNS = [
-    "contractId",
-    "businessDate",
-    "symbol",
-    "contractQuantity",
-    "contractRate",
-    "contractAmount",
-    "sellerMemberId",
-    "buyerMemberId"
-]
+# Column mapping: API field -> display header (businessDate excluded)
+# Symbol column comes blank from the API — no fix needed here
+COLUMN_MAP = {
+    "contractId":       "Transact. No.",
+    "symbol":           "Symbol",
+    "buyerMemberId":    "Buyer",
+    "sellerMemberId":   "Seller",
+    "contractQuantity": "Quantity",
+    "contractRate":     "Rate",
+    "contractAmount":   "Amount",
+}
+
+API_FIELDS = list(COLUMN_MAP.keys())
+HEADERS    = list(COLUMN_MAP.values())
 
 
 def extract_trades(data):
-    """Extract trades list from API response"""
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
@@ -40,7 +44,6 @@ def extract_trades(data):
 
 
 def extract_market_date(trades):
-    """Extract market date from trades data"""
     sample = trades[0]
     for key in ["tradeDate", "businessDate", "timestamp"]:
         if key in sample:
@@ -54,12 +57,63 @@ def extract_market_date(trades):
 
 
 def filter_columns(rows):
-    """Keep only KEEP_COLUMNS from the data"""
-    filtered_rows = []
+    filtered = []
     for row in rows:
-        filtered_row = {col: row.get(col, "") for col in KEEP_COLUMNS}
-        filtered_rows.append(filtered_row)
-    return filtered_rows
+        filtered.append({field: row.get(field, "") for field in API_FIELDS})
+    return filtered
+
+
+def save_xlsx(filtered_rows, filepath):
+    try:
+        import openpyxl
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl", "-q"])
+        import openpyxl
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Floor Sheet"
+
+    # Header row styling
+    header_fill = PatternFill("solid", start_color="1F4E79", end_color="1F4E79")
+    header_font = Font(name="Arial", bold=True, color="FFFFFF", size=10)
+
+    for col_idx, header in enumerate(HEADERS, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Data rows
+    data_font = Font(name="Arial", size=10)
+
+    for row_idx, row in enumerate(filtered_rows, start=2):
+        for col_idx, field in enumerate(API_FIELDS, start=1):
+            value = row[field]
+
+            # Keep contractId (Transact. No.) as text to prevent number truncation
+            if field == "contractId":
+                cell = ws.cell(row=row_idx, column=col_idx, value=str(value))
+                cell.number_format = "@"
+            else:
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+
+            cell.font = data_font
+
+    # Auto-fit column widths
+    col_widths = {"Transact. No.": 16, "Symbol": 10, "Buyer": 8,
+                  "Seller": 8, "Quantity": 12, "Rate": 12, "Amount": 16}
+    for col_idx, header in enumerate(HEADERS, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = \
+            col_widths.get(header, 14)
+
+    # Freeze header row
+    ws.freeze_panes = "A2"
+
+    wb.save(filepath)
 
 
 async def main():
@@ -75,7 +129,6 @@ async def main():
 
         session = {"auth": None, "id": None}
 
-        # TOKEN SNIFFER
         def sniff(request):
             if "floorsheet" in request.url and request.method == "POST":
                 auth = request.headers.get("authorization")
@@ -91,7 +144,6 @@ async def main():
 
         page.on("request", sniff)
 
-        # STEP 1: LOAD PAGE
         print(f"Opening {TARGET_URL}")
         for attempt in range(MAX_RETRIES):
             try:
@@ -106,7 +158,6 @@ async def main():
             await browser.close()
             return
 
-        # Wait for token to be captured
         await asyncio.sleep(3)
 
         if not session["auth"]:
@@ -114,7 +165,6 @@ async def main():
             await browser.close()
             return
 
-        # STEP 2: FETCH ALL TRADES
         all_trades = []
         page_num = 0
         page_size = 500
@@ -137,9 +187,7 @@ async def main():
                 }});
 
                 let body = null;
-                try {{
-                    body = await res.json();
-                }} catch (e) {{}}
+                try {{ body = await res.json(); }} catch (e) {{}}
 
                 return {{ status: res.status, body }};
             }}
@@ -172,22 +220,17 @@ async def main():
 
         await browser.close()
 
-        # STEP 3: CHECK IF MARKET WAS OPEN
         if not all_trades:
             print("❌ No trades found - Market was closed (holiday/weekend)")
             return
 
         print(f"✅ Found {len(all_trades)} trades")
 
-        # STEP 4: REMOVE DUPLICATES
         unique = {t.get("contractId"): t for t in all_trades if t.get("contractId")}
         rows = list(unique.values())
 
-        # STEP 5: FILTER TO KEEP ONLY WANTED COLUMNS
         filtered_rows = filter_columns(rows)
-        print(f"✅ Filtered to {len(KEEP_COLUMNS)} columns")
 
-        # STEP 6: EXTRACT DATE
         market_date = extract_market_date(rows)
         if not market_date:
             print("❌ Could not extract market date")
@@ -195,20 +238,14 @@ async def main():
 
         print(f"Market date: {market_date}")
 
-        # STEP 7: CHECK IF FILE ALREADY EXISTS
-        filename = f"{market_date}.csv"
+        filename = f"{market_date}.xlsx"
         filepath = os.path.join(OUTPUT_DIR, filename)
 
         if os.path.exists(filepath):
             print(f"⚠️ File already exists: {filepath}")
             return
 
-        # STEP 8: SAVE CSV FILE WITH ONLY KEEP_COLUMNS
-        with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=KEEP_COLUMNS)
-            writer.writeheader()
-            writer.writerows(filtered_rows)
-
+        save_xlsx(filtered_rows, filepath)
         print(f"✅ Saved {len(filtered_rows)} rows to {filepath}")
 
 
