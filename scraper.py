@@ -18,7 +18,7 @@ PAGE_LOAD_TIMEOUT = 60000
 # Symbol column comes blank from the API — no fix needed here
 COLUMN_MAP = {
     "contractId":       "Transact. No.",
-    "symbol":           "Symbol",
+    "stockSymbol":           "Symbol",
     "buyerMemberId":    "Buyer",
     "sellerMemberId":   "Seller",
     "contractQuantity": "Quantity",
